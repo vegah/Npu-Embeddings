@@ -1,0 +1,180 @@
+# NpuEmbeddings -- M3: fetch and verify the reference checkpoint.
+#
+# Downloads sentence-transformers/all-MiniLM-L6-v2 into models/<name>/ and then
+# ASSERTS it against docs/04-model/README.md: the config values, the 104-tensor
+# inventory, and the tensor shapes. A silently different checkpoint would poison
+# every golden vector downstream, so the sha256 of model.safetensors is printed
+# and stored -- .npue files will carry it as `source_sha256` (M4).
+#
+# Env: .venv-ref  (huggingface_hub, safetensors)
+# Usage:
+#   & .\.venv-ref\Scripts\python.exe reference\fetch_model.py
+#   & .\.venv-ref\Scripts\python.exe reference\fetch_model.py --model BAAI/bge-small-en-v1.5
+
+import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+MODELS = REPO / "models"
+
+# Only what we actually consume. The .onnx/.openvino exports and the pytorch
+# .bin duplicate are several hundred MB of nothing.
+ALLOW = [
+    "config.json",
+    "model.safetensors",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.txt",
+    "special_tokens_map.json",
+    "sentence_bert_config.json",
+    "modules.json",
+    "1_Pooling/config.json",
+]
+
+# docs/04-model/README.md, "Verified config.json (fetched live)".
+EXPECT_CONFIG = {
+    "model_type": "bert",
+    "hidden_size": 384,
+    "intermediate_size": 1536,
+    "num_attention_heads": 12,
+    "layer_norm_eps": 1e-12,
+    "max_position_embeddings": 512,
+    "position_embedding_type": "absolute",
+    "vocab_size": 30522,
+    "hidden_act": "gelu",
+    "pad_token_id": 0,
+    "type_vocab_size": 2,
+}
+
+PER_LAYER = {
+    "attention.self.query.weight": [384, 384],
+    "attention.self.query.bias": [384],
+    "attention.self.key.weight": [384, 384],
+    "attention.self.key.bias": [384],
+    "attention.self.value.weight": [384, 384],
+    "attention.self.value.bias": [384],
+    "attention.output.dense.weight": [384, 384],
+    "attention.output.dense.bias": [384],
+    "attention.output.LayerNorm.weight": [384],
+    "attention.output.LayerNorm.bias": [384],
+    "intermediate.dense.weight": [1536, 384],
+    "intermediate.dense.bias": [1536],
+    "output.dense.weight": [384, 1536],
+    "output.dense.bias": [384],
+    "output.LayerNorm.weight": [384],
+    "output.LayerNorm.bias": [384],
+}
+
+EMBEDDINGS = {
+    "embeddings.word_embeddings.weight": [30522, 384],
+    "embeddings.position_embeddings.weight": [512, 384],
+    "embeddings.token_type_embeddings.weight": [2, 384],
+    "embeddings.LayerNorm.weight": [384],
+    "embeddings.LayerNorm.bias": [384],
+}
+
+# Dead weight: sentence-transformers never calls the pooler. 147,840 params we
+# must NOT implement. Present in the checkpoint, so allow but do not require.
+IGNORABLE = {"pooler.dense.weight", "pooler.dense.bias", "embeddings.position_ids"}
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def check(local, expect_layers):
+    """Assert the checkpoint matches what docs/04-model claims. Returns problems."""
+    from safetensors import safe_open
+
+    problems = []
+    cfg = json.loads((local / "config.json").read_text(encoding="utf-8"))
+    for k, want in EXPECT_CONFIG.items():
+        got = cfg.get(k)
+        if got != want:
+            problems.append(f"config.{k}: expected {want!r}, got {got!r}")
+    n_layers = cfg.get("num_hidden_layers")
+    if n_layers != expect_layers:
+        problems.append(f"config.num_hidden_layers: expected {expect_layers}, got {n_layers}")
+
+    want = dict(EMBEDDINGS)
+    for i in range(n_layers or 0):
+        for suffix, shape in PER_LAYER.items():
+            want[f"encoder.layer.{i}.{suffix}"] = shape
+
+    st = local / "model.safetensors"
+    with safe_open(st, framework="np") as f:
+        names = set(f.keys())
+        shapes = {n: list(f.get_slice(n).get_shape()) for n in names}
+        dtypes = {n: f.get_slice(n).get_dtype() for n in names}
+
+    for name, shape in want.items():
+        if name not in names:
+            problems.append(f"missing tensor {name}")
+        elif shapes[name] != shape:
+            problems.append(f"{name}: expected shape {shape}, got {shapes[name]}")
+        elif dtypes[name] not in ("F32", "float32"):
+            problems.append(f"{name}: expected F32, got {dtypes[name]}")
+
+    unexpected = names - set(want) - IGNORABLE
+    if unexpected:
+        problems.append(f"unexpected tensors: {sorted(unexpected)}")
+
+    # docs claim 104 = 5 embeddings + 6*16 layer + 2 pooler, position_ids excluded
+    # (it is a buffer). Report the real count either way.
+    print(f"  tensors in checkpoint : {len(names)}")
+    print(f"    required by arch    : {len(want)}")
+    print(f"    ignorable present   : {sorted(names & IGNORABLE)}")
+    print(f"  layers                : {n_layers}")
+    return problems
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model", default="sentence-transformers/all-MiniLM-L6-v2")
+    ap.add_argument("--layers", type=int, default=6, help="expected num_hidden_layers")
+    args = ap.parse_args()
+
+    from huggingface_hub import snapshot_download
+
+    local = MODELS / args.model.split("/")[-1]
+    print(f"fetching {args.model} -> {local}")
+    snapshot_download(
+        repo_id=args.model,
+        local_dir=str(local),
+        allow_patterns=ALLOW,
+    )
+
+    digest = sha256(local / "model.safetensors")
+    print(f"  model.safetensors     : {(local / 'model.safetensors').stat().st_size/1e6:.1f} MB")
+    print(f"  sha256                : {digest}")
+
+    problems = check(local, args.layers)
+
+    # Pin it. Goldens and .npue files reference this; a changed digest must fail
+    # loudly rather than quietly compare against a different checkpoint.
+    (local / "CHECKPOINT.json").write_text(
+        json.dumps(
+            {"repo_id": args.model, "file": "model.safetensors", "sha256": digest},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    if problems:
+        print("\nFAIL -- checkpoint does not match docs/04-model/README.md:")
+        for p in problems:
+            print(f"  - {p}")
+        return 1
+    print("\nOK -- checkpoint matches docs/04-model/README.md")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,38 @@
+{
+  "shape": {
+    "M": 256,
+    "K": 256,
+    "N": 256
+  },
+  "tile": {
+    "m": 64,
+    "k": 64,
+    "n": 32
+  },
+  "dtype": "bf16",
+  "out_dtype": "f32",
+  "emulate_bfp16": true,
+  "mac_dims": [
+    8,
+    8,
+    8
+  ],
+  "intrinsics_per_tile": 256,
+  "macs_per_tile": 131072,
+  "rel_frobenius": 0.010395308262323133,
+  "tol": 0.05,
+  "correctness_pass": true,
+  "cores": [
+    {
+      "core": "core_trace for tile2,0",
+      "n": 128,
+      "min": 945,
+      "avg": 954.671875,
+      "max": 979,
+      "macs_per_cycle": 137.29534034926922,
+      "peak_macs_per_cycle": 256,
+      "efficiency_pct": 53.63099232393329
+    }
+  ],
+  "vector_time": 0.40634920634920635
+}

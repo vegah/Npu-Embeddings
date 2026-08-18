@@ -1,0 +1,23 @@
+{
+  "kind": "wall clock, end-to-end (docs/05-measurement)",
+  "backend": "sentence-transformers, torch CPU",
+  "torch_threads": 12,
+  "seq_len": 64,
+  "rows": [
+    {
+      "batch": 4,
+      "seconds": 0.014419200015254319,
+      "seq_per_s": 277.4079002835339
+    },
+    {
+      "batch": 32,
+      "seconds": 0.054303100012475625,
+      "seq_per_s": 589.2849578136111
+    },
+    {
+      "batch": 128,
+      "seconds": 0.19308729999465868,
+      "seq_per_s": 662.9125789398931
+    }
+  ]
+}
