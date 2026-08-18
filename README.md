@@ -299,6 +299,14 @@ three of them changed the design outright.
 decision** — including the three places our own measurements ended up
 disagreeing with published guidance.
 
+### Related work
+
+[jyatesdotdev/npu-embeddings](https://github.com/jyatesdotdev/npu-embeddings)
+takes the same idea — all-MiniLM on XDNA2 via MLIR-AIE — down a different
+path: INT8 rather than bf16, Linux rather than native Windows, and Strix Halo
+rather than Strix Point. Worth reading alongside this one; the two make
+different trades and neither is the obvious answer.
+
 ### Licensing
 
 This repository is **Apache-2.0**. Five files began as MLIR-AIE examples and
